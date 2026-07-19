@@ -140,10 +140,12 @@ joinGroupForm.addEventListener("submit", async (e) => {
                 addGroup({ id: name, name: g.name });
 
             setSelectedGroup(name);
+            setCurrentDM(null);
             localStorage.setItem("selectedGroup", selectedGroup);
+            localStorage.removeItem("currentDM");
             //            localStorage.setItem("selectedGroup", "");  // Это настолько гениальный мув, что я его оставлю тут)
-            renderSidebar();
-            startChat();
+            await renderSidebar();
+            await startChat();
             updateChatInputVisibility();
             closeJoinModal.onclick();
             return;
@@ -162,12 +164,13 @@ joinGroupForm.addEventListener("submit", async (e) => {
         setCurrentDM({ chatId: chatId, otherUid: otherUid });
         setSelectedGroup(null);
         localStorage.setItem("selectedGroup", "");
-        renderSidebar();
-        startChat();
+        localStorage.setItem("currentDM", JSON.stringify(currentDM));
+        await loadDMChats();
+        await renderSidebar();
+        await startChat();
         closeJoinModal.onclick();
 
         addSystemMessage("ЛС создан!");
-        startChat();
         updateChatInputVisibility();   // ← добавили
     } catch (err) {
         showErr("Ошибка: " + err.message);
@@ -205,14 +208,30 @@ onAuthStateChanged(auth, async (user) => {
         await loadDMChats();
 
         const savedGroup = localStorage.getItem("selectedGroup");
-        if (savedGroup && groups.some(g => g.id === savedGroup)) {
+        let savedDM = null;
+        try {
+            savedDM = JSON.parse(localStorage.getItem("currentDM"));
+        } catch {
+            localStorage.removeItem("currentDM");
+        }
+        const availableDM = dmChats.find(
+            (dm) => dm.chatId === savedDM?.chatId && dm.otherUid === savedDM?.otherUid
+        );
+        if (!availableDM) localStorage.removeItem("currentDM");
+
+        if (availableDM) {
+            setCurrentDM(availableDM);
+            setSelectedGroup(null);
+        } else if (savedGroup && groups.some(g => g.id === savedGroup)) {
+            setCurrentDM(null);
             setSelectedGroup(savedGroup);
         } else {
+            setCurrentDM(null);
             setSelectedGroup(groups.length ? groups[0].id : null);
         }
 
-        renderSidebar();
-        startChat();
+        await renderSidebar();
+        await startChat();
 
         hideSplash();
     } else {
@@ -231,9 +250,12 @@ onAuthStateChanged(auth, async (user) => {
         profileBtn.setAttribute("aria-expanded", "false");
         setGroups([]);
         setSelectedGroup(null);
+        setCurrentDM(null);
+        setDMChats([]);
         groupList.innerHTML = "";
         clearMessages();
         localStorage.removeItem("selectedGroup");
+        localStorage.removeItem("currentDM");
     }
     updateChatInputVisibility();
 });
@@ -241,6 +263,10 @@ onAuthStateChanged(auth, async (user) => {
 // Обновляем счётчик символов статуса
 profileStatus.addEventListener("input", () => {
     statusCounter.textContent = 80 - profileStatus.value.length;
+});
+
+profileNick.addEventListener("input", () => {
+    profileNickError.style.display = "none";
 });
 
 // Открыть/закрыть панель профиля
@@ -302,8 +328,8 @@ profileForm.addEventListener("submit", async (e) => {
 
     // Обновляем профиль в UI без перезагрузки
     await loadUserProfile();
-    renderSidebar();
-    startChat();
+    await renderSidebar();
+    await startChat();
 });
 
 // Загружаем профиль пользователя
@@ -314,10 +340,6 @@ async function loadUserProfile() {
     profileColor.value = d.color || "#cccccc";
     profileStatus.value = d.status || "";
     statusCounter.textContent = 80 - profileStatus.value.length;
-
-    profileNick.addEventListener("input", () => {
-        profileNickError.style.display = "none";
-    });
 
 }
 
@@ -341,9 +363,6 @@ async function loadDMChats() {
 // Рендерим сайдбар
 async function renderSidebar() {
     groupList.innerHTML = "";
-
-    // Загружаем ДМ-чаты
-    await loadDMChats();
 
     if (dmChats.length) {
         const dmHeader = document.createElement("div");
@@ -373,6 +392,7 @@ async function renderSidebar() {
                 setSelectedGroup(null);
                 setCurrentDM({ chatId: dm.chatId, otherUid: dm.otherUid });
                 localStorage.setItem("selectedGroup", "");
+                localStorage.setItem("currentDM", JSON.stringify(currentDM));
 
                 // Создаём чат-документ, если его ещё нет
                 await setDoc(
@@ -382,7 +402,7 @@ async function renderSidebar() {
                 );
 
                 await renderSidebar();
-                startChat();
+                await startChat();
 
                 updateChatInputVisibility();
             };
@@ -412,14 +432,15 @@ async function renderSidebar() {
             div.textContent = g.name;
             div.tabIndex = 0;
 
-            div.onclick = () => {
+            div.onclick = async () => {
                 if (g.id !== selectedGroup) {
                     setSelectedGroup(g.id);
                     setCurrentDM(null);
                     localStorage.setItem("selectedGroup", selectedGroup);
+                    localStorage.removeItem("currentDM");
                     //                    localStorage.setItem("selectedGroup", ""); // да что же это за гениальный ИИ такой...
-                    renderSidebar();
-                    startChat();
+                    await renderSidebar();
+                    await startChat();
 
                     updateChatInputVisibility();
                 }
@@ -489,9 +510,14 @@ async function loadProfile(uid) {
 
 // Запускаем подписку на сообщения выбранной группы
 async function startChat() {
-    if (unsubscribe) unsubscribe();
+    if (unsubscribe) {
+        unsubscribe();
+        setUnsubscribe(null);
+    }
     clearMessages();
     renderDraft();
+
+    if (!currentUser) return;
 
     if (currentDM) {
         await setDoc(
@@ -617,7 +643,7 @@ async function openDMChat(chatId, otherUid) {
     setSelectedGroup(null);
     setCurrentDM({ chatId: chatId, otherUid: otherUid });
     localStorage.setItem("selectedGroup", "");
-    localStorage.setItem("currentDM".JSON.stringify(currentDM))
+    localStorage.setItem("currentDM", JSON.stringify(currentDM));
 
     // Создаём/обновляем чат-документ заранее, чтобы Firestore разрешил чтение
     await setDoc(
@@ -626,8 +652,9 @@ async function openDMChat(chatId, otherUid) {
         { merge: true }
     );
 
-    renderSidebar();
-    startChat();
+    await loadDMChats();
+    await renderSidebar();
+    await startChat();
     updateChatInputVisibility();
 }
 
@@ -704,7 +731,7 @@ updateCharCount();
 
 // Загружаем группы пользователя из Firestore
 async function loadUserGroups() {
-
+    setGroups([]);
     const groupsRef = collection(db, "groups");
     const q = query(groupsRef);
     const snap = await getDocs(q);

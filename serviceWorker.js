@@ -1,35 +1,7 @@
-const VERSION_ID = 1 // Версия самого ServiceWorker-а. Обычно увеличивается на 1 с каждым обновлением (т.к. Старые serviceworker-ы имеют старый контент.)
-const TAG = "v" + VERSION_ID
+const VERSION_ID = 2;
+const CACHE_PREFIX = "aboba-";
+const CACHE_NAME = `${CACHE_PREFIX}v${VERSION_ID}`;
 
-async function populateCache(res) {
-    const localCache = await caches.open(TAG)
-    await localCache.addAll(res);
-};
-
-async function delCache(key) {
-    await caches.delete(key);
-}
-
-async function cleanCache() {
-    if ((await caches.keys()).length == 1) { return; }
-    // Мы храним тольео один кэш, если при актвации действительно ксть только один кэш,
-    // значит мы только что установились впервые
-    const keyList = await caches.keys();
-    const cacheToDelete = keyList.filter((key) => {
-        return !(key == TAG)
-    });
-    console.log(cacheToDelete)
-    await Promise.all(cacheToDelete.map(delCache))
-}
-
-// Я даже не знаю, хорошо ли это... Ну, по крайней мере сплэш теперь будет показываться быстрее...
-// Хотя браузер сам по себе должен кэшировать это всё...
-// Впрочем, когда будем сохранять сообщения это может быть полезно... Оставим пока как есть
-// P.S: Введя IndexedDB в работу для сохранения сообщений и групп, можно будет ввести поиск по дате
-// А если оставить расшифировку при получении (ожидаемо), то можно будет искать и по контенту.
-
-// P.S: По какой-то причине в режиме PWA не работает кэш
-// В некоторых браузерах, так что, возможно, стоит оставить этот функционал
 const cachedList = [
     "/index.html",
     "/index.css",
@@ -42,24 +14,42 @@ const cachedList = [
     "/splash.js",
     "/storage.js",
     "/util.js"
-]
-self.addEventListener("install", (e) => {
-    e.waitUntil(populateCache(cachedList));
-})
-self.addEventListener("activate", (e) => {
-    e.waitUntil(cleanCache());
-})
+];
 
-async function fetch_handler(request) {
-    const cachedResp = caches.match(request);
-    if (cachedResp) { return cachedResp; }
+async function populateCache(resources) {
+    const localCache = await caches.open(CACHE_NAME);
+    await localCache.addAll(resources);
+}
+
+async function cleanCache() {
+    const keyList = await caches.keys();
+    const oldAppCaches = keyList.filter(
+        (key) => key === "v1" || (key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)
+    );
+    await Promise.all(oldAppCaches.map((key) => caches.delete(key)));
+}
+
+self.addEventListener("install", (event) => {
+    event.waitUntil(populateCache(cachedList));
+});
+
+self.addEventListener("activate", (event) => {
+    event.waitUntil(cleanCache().then(() => self.clients.claim()));
+});
+
+async function fetchHandler(request) {
+    const cachedResponse = await caches.match(request);
+    if (cachedResponse) return cachedResponse;
+
     try {
-        return fetch(request);
-    }
-    catch (err) {
-        console.debug("Fetch failed with " + err.toLocaleString())
-        return new Response("", { status: 408 })
+        return await fetch(request);
+    } catch (error) {
+        console.debug(`Fetch failed: ${error}`);
+        return new Response("Сеть недоступна", { status: 503 });
     }
 }
 
-self.addEventListener("fetch", fetch_handler)
+self.addEventListener("fetch", (event) => {
+    if (event.request.method !== "GET") return;
+    event.respondWith(fetchHandler(event.request));
+});
